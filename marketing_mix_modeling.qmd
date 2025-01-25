@@ -1,0 +1,192 @@
+---
+title: "Marketing Mix Modeling using Causal Inference"
+colorlinks: true
+code-line-numbers: true
+format:
+  typst: 
+    number-sections: true
+    toc: false
+    number-depth: 2
+    fontsize: 10pt
+    linestretch: 1.5
+knitr:
+  opts_chunk:
+    echo: true
+    warning: true
+    message: true
+    error: true
+editor_options: 
+  chunk_output_type: inline
+---
+
+```{r}
+#| echo: false
+# load the dataset by running this code block.
+pacman::p_load(dplyr,modelsummary,fixest)
+data_product <- read.csv("https://www.dropbox.com/s/zdn14voui3o0zgb/data_product.csv?dl=1")
+
+data_marketing <- read.csv("https://www.dropbox.com/s/tz8t1711ll9t10g/data_marketing.csv?dl=1")
+
+data_sales <- read.csv("https://www.dropbox.com/s/synk0dokenr3m2a/data_sales.csv?dl=1")
+
+```
+
+# Data Merge and Wrangling
+
+> ***Merge the Dataset***
+
+```{r}
+
+# Merge data_product and data_sales below
+data_full <- left_join(data_sales, data_product, by = "product_id")
+head(data_full)
+```
+
+We create data_full by joining data_product to data_sales using left_join. The data_sales dataframe is placed as the first argument because it contains weekly sales information, which is the most granular, making it the main dataframe. This ensures no sales data is omitted. The common key used is product_id, which links each product's specifications from data_product to its corresponding sales records in data_sales.
+
+```{r}
+
+# Merge data_marketing onto data_full below
+data_full <- right_join(data_marketing, data_full, by = c("brand", "week_id"))
+head(data_full)
+
+```
+
+We use right_join to merge data_marketing and data_full, assigning the result to data_full. In a right join, all rows from the second dataframe, data_full, are retained, and only matching rows from the first dataframe, data_marketing, are added. We put data_full as the second argument because it has the most granular data, and it contains sales and product data, which are critical for the analysis and must not be omitted. The common keys used are brand and week_id, which link the marketing data to the corresponding sales and product details.
+
+> **Compute final_price, which is the actual retail price for each week**
+
+```{r}
+#the final price is the recommended retail price (RRP) minus the discount, which is discount rate times the RRP
+data_full <- data_full %>%
+  mutate(final_price = RRP - (RRP * discount))
+
+head(data_full)
+
+```
+
+**Compute average weekly sales for each brand accross all weeks and rank them**
+
+The brand which has the highest average weekly sales is Samsung with average weekly sales of 39637.8713
+
+```{r}
+
+data_sales_by_brand <- data_full %>%
+  #row data level is weekly sales for each product in each brand. Therefore, we can calculate weekly dollar sales by multiplying final price to sales
+  mutate(weekly_dollar_sales = final_price * sales) %>% 
+  #we define the variable of interest to group the average weekly sales, which is brand
+  group_by(brand) %>% 
+  #after group by, we have to define the summarise. In this case we use mean since we want the average
+  summarise(avg_weekly_sales = mean(weekly_dollar_sales, na.rm = TRUE)) %>% 
+  #Since we want to find the brand with highest average weekly sales, we sort avg_weekly sales descending.
+  arrange(desc(avg_weekly_sales)) 
+
+data_sales_by_brand
+```
+
+```{r}
+# print out the ranking of brands based on average weekly dollar sales
+data_sales_by_brand
+```
+
+The above average sales ranking alone cannot causally inform us which brand has the highest brand equity. The ranking only reflects average weekly sales, but it does not account for other factors that could influence sales, such as RRP (Recommended Retail Price), discounts, marketing expenditure, or product specifications. These variables, along with others not included in the dataset, could impact sales independently of brand equity. To determine which brand has the highest brand equity, we would need to isolate the effect of the brand itself by controlling for these confounding factors.
+
+# Marketing Mix Modeling
+
+> **Run a Marketing Mix Modeling linear regression**
+
+```{r}
+
+# we use feols to run linear regression using fixest package
+# sales is dependent variable (b*final price)
+# final_price and marketing_expense is the independent variable (c*marketing_expense)
+# data is our main dataframe, which is data_full
+ols_1 <- feols(sales ~ final_price + marketing_expense, data = data_full)
+
+# Display the summary
+summary(ols_1)
+  
+  
+```
+
+```{r}
+s
+
+modelsummary(ols_1,
+             stars = T,
+             gof_map = c('nobs','r.squared'))
+```
+
+Both final_price and marketing_expense are statistically significant with an alpha less than 0.001, indicating extremely strong evidence against the null hypothesis that their coefficients are zero. All else being equal, for every 1 unit increase in final_price, sales increase by 0.002329 units. Also, all else being equal, for every 1 unit increase in marketing_expense, sales increase by 0.048572 units. While both variables are statistically significant, marketing_expense has a stronger effect on sales than final_price.
+
+> **Potential Endogeinity Issues**
+
+Endogeneity is an econometric issue in ordinary least squares linear regression when an independent variable is correlated with the error term, leading to biased coefficient estimates. It can be caused by omitted variable bias, reverse causality, or measurement error. Omitted variable bias arises when a relevant variable influencing both the dependent and independent variables is excluded from the model, creating spurious relationships. Reverse causality happens when the independent variable affects the dependent variable, and the dependent variable affects the independent variable simultaneously. Measurement error happens when the observed values of an independent variable differ from the actual values because of the possibility of not measuring the variable perfectly. Measurement error could also happen when we try to use proxy variables. For example, exam grade might not be the only thing that measure students's ability to learn, and using exam grade as a proxy variable for ability will cause measurement error.
+
+Omitted variable bias can occur if other unobserved factors like customer preferences or product popularity are excluded from the model. These factors can influence both final_price and sales, creating a spurious correlation between them. For instance, popular products might have higher prices and higher sales, leading to biased estimates. Reverse causality can happen if Amazon adjusts prices based on sales performance. For example, Amazon might increase the price of a popular product to maximize revenue or reduce the price of a poorly performing product to trigger more sales, making final_price dependent on sales. Measurement errors can occur if Amazon does not accurately record the price data. Variability in prices due to temporary discounts within a week, cashback offered from third-party websites, discounts applied to only certain customer demographics, or an error in inputing data can result in inconsistent price data, leading to biases in the analysis of the relationship between final price and sales.
+
+If Amazon randomly assigns the discount each week, Equation 1 would likely provide the causal effect of price on sales. Randomization ensures that price changes are not influenced by unobserved factors, such as product popularity or seasonality, which can cause endogeneity. Randomly assigning discounts eliminates the correlation between final_price and the error term and fulfills the exogeneity assumption. This means that any observed effect of price on sales can be interpreted causally.
+
+**Measure Brand Equity**
+
+> The following is how we typically measure brand equity using Marketing Mix Modeling: We can further add brand factor variables to Equation 1, so that the coefficients of the brand factors represent the brand equity of each brand relative to the baseline brand after controlling for other confounding variables.
+
+-   Factorize brand into a factor variable, `brand_factor`, using *Philips* as the baseline group and run the above regression. Interpret the coefficients of `brand_factor`.
+
+```{r}
+# mutate brand_factor below
+# we use "factor" to add factor variables
+# we define the factor by using "levels" parameter
+# we put "Philips" first to define it as the baseline group
+data_full <- data_full %>%
+  mutate(brand_factor = factor(brand, levels = c("Philips", "Samsung", "Sony", "LG")))
+
+
+# run the regression below
+# in this regression, we also include brand_factor as the independent variable
+ols_brandeffect <- feols(sales ~ final_price + marketing_expense + brand_factor, data = data_full)
+
+summary(ols_brandeffect)
+```
+
+```{r}
+modelsummary(ols_brandeffect,
+             stars = TRUE,
+             gof_map = c('nobs','r.squared'))
+```
+
+Based on their regression coefficients, the ranking of brand equity from highest to lowest is Philips, Samsung, Sony, and LG. Since all factors have negative values, Phillips, as the baseline, has the highest brand equity. For other brands, the smaller their coefficient is, the smaller the brand equity. Therefore, after Phillips, the orders are Samsung, Sony, and LG.
+
+# Instrumental Variables and Natural Experiments to address Endogeinity
+
+To address endogeneity in final_price, we can use the cost of production and pricing in another country as the instrumental variables. A valid instrument must satisfy three conditions: relevance, exogeneity, and exclusion. Relevance requires the instrument to be strongly correlated with final_price, ensuring it significantly impacts price determination. Exogeneity requires the instrument to be uncorrelated with the error term in the sales equation. Exclusion requires the instrument to affect the dependent variable only through the chosen independent variable. Also, the data has to be available for collection.
+
+The first instrument, cost of production, is relevant because retailers set prices based on production costs; the higher the production costs are, the higher the prices are as well. It fulfills exogeneity because production costs are unrelated to unobserved factors that can also affect sales, such as customer preferences or marketing strategies. It also fulfills exclusion because production costs are often not published publicly, affecting sales only through final_price, not directly affecting sales. Finally, we can collect the production cost data directly from each brand's company.
+
+The second instrument, pricing in another country, is relevant because international pricing strategies often influence a company's local pricing decisions. It fulfills exogeneity because prices in foreign markets are typically determined by global factors such as exchange rates and regional market conditions, without being directly affected by the product's local sales. These factors influence final_price but do not directly affect local consumer demand. This makes pricing in another country a valid instrument, helping to address the correlation between final_price and unobserved factors in the sales equation. Finally, we can easily scrape price data from international e-commerce websites to obtain reliable pricing information from other countries.
+
+VAT tax rate can be a potential candidate for instrumental variable. However, the suitability of the VAT tax rate as an instrumental variable for final_price depends on its variability during the data collection period. If the VAT rate remains unchanged, it cannot serve as an instrumental variable due to the lack of effect on final_price. However, if the VAT rate changes, it becomes a strong candidate, as it influences sales only through final_price. It is relevant because taxation is mandatory, exogenous due to the absence of unobserved confounding factors, and the data is publicly accessible. Thus, the VAT rate's variability during the analysis period determines its validity as an instrumental variable.
+
+> The codeblocs below shows two regressions we would need to run in order to estimate the causal effects of `final_price` on `sales` assuming `marketing_expense` as the only confounding variable
+
+```{r}
+#| eval: false
+
+
+### Stage 1
+#This regression uses Z1 and Z2 as instrumental variables to predict final_price, controlling for marketing_expense
+first_stage <- feols(final_price ~ Z1 + Z2 + marketing_expense, data = data_full)
+summary(first_stage)
+ 
+
+#We create new columns to store predicted final_price from previous regression as predicted_final_price and we will later use it in the second stage to account for endogeneity
+data_full <- data_full %>%
+  mutate(predicted_final_price = predict(first_stage))
+
+
+
+### Stage 2ow
+iv_model <- feols(sales ~ predicted_final_price + marketing_expense, data = data_full)
+summary(iv_model)
+#This regression use the predicted_final_price as the endogenous variable instead of the final price to capture the causal effect of final_price on sales. This two-stage least squares (2SLS) approach isolates the variation in final_price that is uncorrelated with the error term in the sales equation, ensuring a consistent estimate of its causal effect.
+```
